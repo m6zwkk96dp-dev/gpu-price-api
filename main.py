@@ -4,7 +4,7 @@ import requests
 app = FastAPI(
     title="Multi-Cloud GPU Intelligence & Cost Calculator API",
     description="Real-time GPU pricing across clouds, training cost estimation, and deal tracking.",
-    version="0.3.0"
+    version="0.3.1"
 )
 
 VAST_API_URL = "https://console.vast.ai/api/v0/bundles/"
@@ -19,7 +19,7 @@ def home():
 @app.get("/cheapest")
 def get_cheapest_gpu(gpu_name: str = "4090"):
     """
-    Keresés a legolcsóbb GPU-ra a Vast.ai kínálatában (pl. 4090, rtx4090, a100, h100)
+    Find the cheapest available GPU offer on Vast.ai (e.g. 4090, rtx4090, a100, h100).
     """
     try:
         response = requests.get(VAST_API_URL, timeout=10)
@@ -58,7 +58,7 @@ def get_cheapest_gpu(gpu_name: str = "4090"):
 @app.get("/compare")
 def compare_providers(gpu_name: str = "4090"):
     """
-    Összehasonlítja a Vast.ai, RunPod és Lambda Labs árait
+    Compare real-time GPU hourly rates across Vast.ai, RunPod, and Lambda Labs.
     """
     vast_res = None
     try:
@@ -92,7 +92,7 @@ def compare_providers(gpu_name: str = "4090"):
 @app.get("/estimate-cost")
 def estimate_cost(hours: float = 10.0, gpu_type: str = "4090", num_gpus: int = 1):
     """
-    AI Betanítási és Futtatási Költségkalkulátor
+    Estimate total AI training or inference runtime cost across multiple GPUs.
     """
     base_rate = 0.35 if "4090" in gpu_type else 1.50
     try:
@@ -109,5 +109,5 @@ def estimate_cost(hours: float = 10.0, gpu_type: str = "4090", num_gpus: int = 1
         "estimated_hours": hours,
         "hourly_rate_per_gpu_usd": base_rate,
         "estimated_total_cost_usd": total_cost,
-        "summary": f"Futtatás várható költsége {hours} órára ({num_gpus}x {gpu_type}): ${total_cost} USD"
+        "summary": f"Estimated cost for {hours} hours ({num_gpus}x {gpu_type}): ${total_cost} USD"
     }

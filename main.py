@@ -29,7 +29,6 @@ def get_cheapest_gpu(gpu_name: str = "4090"):
         offers = data.get("offers", [])
         matching_offers = []
         
-        # Tisztítjuk a keresőszót a rugalmas találatokhoz
         search_target = gpu_name.lower().replace(" ", "").replace("-", "").replace("rtx", "")
         
         for offer in offers:
@@ -67,7 +66,6 @@ def compare_providers(gpu_name: str = "4090"):
     except HTTPException as e:
         vast_res = {"error": str(e.detail)}
 
-    # Becsült / piaci benchmark árak a többi szolgáltatótól
     runpod_res = {
         "provider": "RunPod",
         "gpu_name": gpu_name.upper(),

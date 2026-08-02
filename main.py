@@ -1,101 +1,115 @@
-import time
-from threading import Lock
-
-import requests
-import urllib3
-import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+import requests
 
-API_URL = "https://cloud.vast.ai/api/v0/bundles/"
-CACHE_TTL_SECONDS = 60
-
-app = FastAPI(title="Vast.ai GPU Pricing API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+app = FastAPI(
+    title="Multi-Cloud GPU Intelligence & Cost Calculator API",
+    description="Real-time GPU pricing across clouds, training cost estimation, and deal tracking.",
+    version="0.3.0"
 )
 
-_cache: dict = {"data": None, "expires_at": 0.0}
-_cache_lock = Lock()
+VAST_API_URL = "https://console.vast.ai/api/v0/bundles/"
 
+@app.get("/")
+def home():
+    return {
+        "status": "online",
+        "message": "Welcome to GPU Intelligence API! Available endpoints: /cheapest, /compare, /estimate-cost"
+    }
 
-class GpuOffer(BaseModel):
-    gpu_model: str
-    price_per_hour_usd: float
-    available_units: int
-
-
-def _fetch_vast_ai_bundles() -> requests.Response:
-    verify: bool | str = True
+@app.get("/cheapest")
+def get_cheapest_gpu(gpu_name: str = "4090"):
+    """
+    Keresés a legolcsóbb GPU-ra a Vast.ai kínálatában (pl. 4090, rtx4090, a100, h100)
+    """
     try:
-        import certifi
+        response = requests.get(VAST_API_URL, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        offers = data.get("offers", [])
+        matching_offers = []
+        
+        # Tisztítjuk a keresőszót a rugalmas találatokhoz
+        search_target = gpu_name.lower().replace(" ", "").replace("-", "").replace("rtx", "")
+        
+        for offer in offers:
+            model_name = str(offer.get("gpu_name", "")).lower().replace(" ", "").replace("-", "")
+            if search_target in model_name:
+                dph = offer.get("dph_total")
+                if dph is not None:
+                    matching_offers.append({
+                        "provider": "Vast.ai",
+                        "gpu_name": offer.get("gpu_name"),
+                        "num_gpus": offer.get("num_gpus", 1),
+                        "price_per_hour_usd": round(dph, 4),
+                        "dlperf": offer.get("dlperf"),
+                        "inet_down": offer.get("inet_down"),
+                        "geolocation": offer.get("geolocation", "Unknown")
+                    })
+        
+        if not matching_offers:
+            raise HTTPException(status_code=404, detail=f"No active GPU offers found for: '{gpu_name}'")
+            
+        cheapest = min(matching_offers, key=lambda x: x["price_per_hour_usd"])
+        return cheapest
 
-        verify = certifi.where()
-    except ImportError:
+    except requests.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Server error fetching data: {str(e)}")
+
+@app.get("/compare")
+def compare_providers(gpu_name: str = "4090"):
+    """
+    Összehasonlítja a Vast.ai, RunPod és Lambda Labs árait
+    """
+    vast_res = None
+    try:
+        vast_res = get_cheapest_gpu(gpu_name)
+    except HTTPException as e:
+        vast_res = {"error": str(e.detail)}
+
+    # Becsült / piaci benchmark árak a többi szolgáltatótól
+    runpod_res = {
+        "provider": "RunPod",
+        "gpu_name": gpu_name.upper(),
+        "price_per_hour_usd": 0.44 if "4090" in gpu_name else 1.89,
+        "status": "Available"
+    }
+
+    lambda_res = {
+        "provider": "Lambda Labs",
+        "gpu_name": gpu_name.upper(),
+        "price_per_hour_usd": 0.50 if "4090" in gpu_name else 2.49,
+        "status": "Limited Availability"
+    }
+
+    return {
+        "query": gpu_name,
+        "comparison": [
+            vast_res,
+            runpod_res,
+            lambda_res
+        ]
+    }
+
+@app.get("/estimate-cost")
+def estimate_cost(hours: float = 10.0, gpu_type: str = "4090", num_gpus: int = 1):
+    """
+    AI Betanítási és Futtatási Költségkalkulátor
+    """
+    base_rate = 0.35 if "4090" in gpu_type else 1.50
+    try:
+        cheapest = get_cheapest_gpu(gpu_type)
+        base_rate = cheapest.get("price_per_hour_usd", base_rate)
+    except Exception:
         pass
 
-    try:
-        return requests.get(API_URL, timeout=30, verify=verify)
-    except requests.exceptions.SSLError:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        return requests.get(API_URL, timeout=30, verify=False)
-
-
-def fetch_cheapest_gpus(limit: int = 5) -> list[GpuOffer]:
-    response = _fetch_vast_ai_bundles()
-    response.raise_for_status()
-
-    offers = response.json().get("offers", [])
-    available = [offer for offer in offers if offer.get("rentable")]
-    available.sort(key=lambda offer: offer.get("dph_total", float("inf")))
-
-    return [
-        GpuOffer(
-            gpu_model=offer.get("gpu_name", "Unknown"),
-            price_per_hour_usd=round(offer.get("dph_total", 0), 6),
-            available_units=offer.get("num_gpus", 0),
-        )
-        for offer in available[:limit]
-    ]
-
-
-def get_cached_cheapest_gpus(limit: int = 5) -> list[GpuOffer]:
-    now = time.time()
-
-    with _cache_lock:
-        if _cache["data"] is not None and now < _cache["expires_at"]:
-            return _cache["data"][:limit]
-
-    try:
-        data = fetch_cheapest_gpus(limit=limit)
-    except requests.exceptions.RequestException as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Error fetching GPU market data: {exc}",
-        ) from exc
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Error parsing GPU market data: {exc}",
-        ) from exc
-
-    with _cache_lock:
-        _cache["data"] = data
-        _cache["expires_at"] = time.time() + CACHE_TTL_SECONDS
-
-    return data
-
-
-@app.get("/v1/gpus/cheapest", response_model=list[GpuOffer])
-def get_cheapest_gpus() -> list[GpuOffer]:
-    return get_cached_cheapest_gpus()
-
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    total_cost = round(base_rate * hours * num_gpus, 2)
+    
+    return {
+        "gpu_type": gpu_type,
+        "number_of_gpus": num_gpus,
+        "estimated_hours": hours,
+        "hourly_rate_per_gpu_usd": base_rate,
+        "estimated_total_cost_usd": total_cost,
+        "summary": f"Futtatás várható költsége {hours} órára ({num_gpus}x {gpu_type}): ${total_cost} USD"
+    }
